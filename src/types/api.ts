@@ -7,6 +7,7 @@ export interface Env {
   ALLOWED_MODELS: string;
   MAX_OUTPUT_TOKENS?: string;
   RATE_LIMIT_MAX?: string;
+  GLOBAL_DAILY_MAX?: string;
   UPSTREAM_AUTH_SCHEME?: string;
   UPSTREAM_TIMEOUT_MS?: string;
   STATS_TOKEN: string;
@@ -20,6 +21,7 @@ export interface Config {
   allowedModels: readonly string[];
   maxOutputTokens: number;
   rateLimitMax: number;
+  globalDailyMax: number;
   authScheme: "bearer" | "x-api-key";
   timeoutMs: number;
   rateLimitKv: KVNamespace;

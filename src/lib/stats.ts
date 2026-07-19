@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readGlobalCount } from "./global-limit";
 
 // Keep daily counters well past the 14-day read window so the whole window is
 // always present, then let KV expire them so old days clean themselves up.
@@ -13,6 +14,7 @@ export type StatOutcome =
   | "success"
   | "forbidden"
   | "rateLimited"
+  | "globalLimited"
   | "kvFailure"
   | "upstreamError"
   | "rejected"
@@ -26,6 +28,10 @@ const dailyStatsSchema = z.object({
   success: z.number().int().nonnegative(),
   forbidden: z.number().int().nonnegative(),
   rateLimited: z.number().int().nonnegative(),
+  // Requests rejected by the global daily cap (429). Kept distinct from
+  // rateLimited so a sustained IP-rotation attack is visible apart from normal
+  // per-IP throttling. Defaulted so days written before this counter validate.
+  globalLimited: z.number().int().nonnegative().default(0),
   kvFailure: z.number().int().nonnegative(),
   upstreamError: z.number().int().nonnegative(),
   // Requests rejected by model-allowlist or token-ceiling validation (400).
@@ -39,8 +45,16 @@ export interface DailyStatsEntry extends DailyStats {
   date: string;
 }
 
+/** Current UTC day's aggregate global cap usage and the configured ceiling. */
+export interface GlobalStats {
+  date: string;
+  count: number;
+  max: number;
+}
+
 export interface StatsReport {
   days: DailyStatsEntry[];
+  global: GlobalStats;
 }
 
 function zeroStats(): DailyStats {
@@ -49,6 +63,7 @@ function zeroStats(): DailyStats {
     success: 0,
     forbidden: 0,
     rateLimited: 0,
+    globalLimited: 0,
     kvFailure: 0,
     upstreamError: 0,
     rejected: 0,
@@ -110,7 +125,8 @@ export async function recordOutcome(
 export async function readRecentStats(
   kv: KVNamespace,
   nowMs: number,
-  days: number
+  days: number,
+  globalDailyMax: number
 ): Promise<StatsReport> {
   const reads = Array.from({ length: days }, async (_unused, index) => {
     const date = statsDate(nowMs - index * MS_PER_DAY);
@@ -118,5 +134,12 @@ export async function readRecentStats(
     const entry: DailyStatsEntry = { date, ...stats };
     return entry;
   });
-  return { days: await Promise.all(reads) };
+  const [dayEntries, globalCount] = await Promise.all([
+    Promise.all(reads),
+    readGlobalCount(kv, nowMs),
+  ]);
+  return {
+    days: dayEntries,
+    global: { date: statsDate(nowMs), count: globalCount, max: globalDailyMax },
+  };
 }

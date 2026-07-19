@@ -1,6 +1,11 @@
 import { chatRequestSchema } from "./lib/chat-schema";
 import { corsHeaders, handlePreflight, resolveAllowedOrigin } from "./lib/cors";
 import { loadConfig } from "./lib/env";
+import {
+  checkGlobalCap,
+  consumeGlobalBudget,
+  type GlobalCapResult,
+} from "./lib/global-limit";
 import { jsonError, jsonOk, readBodyWithLimit } from "./lib/http";
 import { checkRateLimit, type RateLimitResult } from "./lib/rate-limit";
 import {
@@ -103,7 +108,8 @@ async function handleStats(
     const report = await readRecentStats(
       config.rateLimitKv,
       Date.now(),
-      STATS_WINDOW_DAYS
+      STATS_WINDOW_DAYS,
+      config.globalDailyMax
     );
     return jsonOk(report);
   } catch (error) {
@@ -156,6 +162,33 @@ async function handleChat(
     return { response: jsonError(429, "Rate limit exceeded", cors) };
   }
 
+  // Global daily cap across ALL callers, checked after the per-IP limit and
+  // before the body is even read — the per-IP limiter hands an IP-rotating
+  // attacker a fresh bucket per IP, so this shared counter is the only bound on
+  // aggregate spend. Read-only here; the count is consumed just before the
+  // fetch, so requests rejected earlier never spend global budget.
+  let globalCap: GlobalCapResult;
+  try {
+    globalCap = await checkGlobalCap(
+      config.rateLimitKv,
+      config.globalDailyMax,
+      Date.now()
+    );
+  } catch (error) {
+    // Fail closed, exactly like the per-IP limiter: a counter we can't read
+    // must never be treated as headroom, or a KV outage becomes unlimited spend.
+    console.error("Global cap check failed:", error);
+    cors.set("Retry-After", String(KV_OUTAGE_RETRY_AFTER_SECONDS));
+    return { response: jsonError(503, "Service temporarily unavailable", cors) };
+  }
+  if (!globalCap.allowed) {
+    cors.set("Retry-After", String(globalCap.retryAfterSeconds));
+    return {
+      response: jsonError(429, "Daily request limit reached", cors),
+      outcome: "globalLimited",
+    };
+  }
+
   const bodyResult = await readBodyWithLimit(request, MAX_BODY_BYTES);
   if (bodyResult.kind === "too-large") {
     return { response: jsonError(413, "Request body too large", cors) };
@@ -187,6 +220,19 @@ async function handleChat(
       response: jsonError(400, "Invalid request body", cors),
       outcome: "rejected",
     };
+  }
+
+  // This request has cleared every rejection gate and is about to reach
+  // upstream, so it — and only now — consumes one unit of global daily budget.
+  // Bad-origin / bad-model / over-ceiling requests returned above and never got
+  // here, so they don't spend the cap. Fail closed on a write failure: if we
+  // can't record the spend we must not forward it, matching the per-IP limiter.
+  try {
+    await consumeGlobalBudget(config.rateLimitKv, Date.now(), globalCap.count);
+  } catch (error) {
+    console.error("Global counter write failed:", error);
+    cors.set("Retry-After", String(KV_OUTAGE_RETRY_AFTER_SECONDS));
+    return { response: jsonError(503, "Service temporarily unavailable", cors) };
   }
 
   const wantsStream = body.stream === true;

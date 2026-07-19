@@ -20,6 +20,9 @@ ALLOWED_MODELS = "claude-sonnet-4-6"
 MAX_OUTPUT_TOKENS = "2048"
 # Requests per hour per client IP.
 RATE_LIMIT_MAX = "5"
+# Absolute cap on upstream-bound /v1/chat requests per UTC day across ALL callers.
+# Closes the IP-rotation gap the per-IP limit alone can't: over it -> 429 until UTC midnight.
+GLOBAL_DAILY_MAX = "200"
 # Upstream timeout in milliseconds (time to response headers for streams).
 UPSTREAM_TIMEOUT_MS = "60000"
 
