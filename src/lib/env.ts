@@ -14,6 +14,17 @@ const varsSchema = z.object({
         .filter((origin) => origin.length > 0)
     )
     .pipe(z.array(z.string().url()).min(1)),
+  ALLOWED_MODELS: z
+    .string()
+    .min(1)
+    .transform((raw) =>
+      raw
+        .split(",")
+        .map((model) => model.trim())
+        .filter((model) => model.length > 0)
+    )
+    .pipe(z.array(z.string().min(1)).min(1)),
+  MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(2048),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   UPSTREAM_AUTH_SCHEME: z.enum(["bearer", "x-api-key"]).default("bearer"),
   UPSTREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
@@ -35,6 +46,8 @@ export function loadConfig(env: Env): Config {
     UPSTREAM_URL: env.UPSTREAM_URL,
     UPSTREAM_API_KEY: env.UPSTREAM_API_KEY,
     ALLOWED_ORIGINS: env.ALLOWED_ORIGINS,
+    ALLOWED_MODELS: env.ALLOWED_MODELS,
+    MAX_OUTPUT_TOKENS: env.MAX_OUTPUT_TOKENS,
     RATE_LIMIT_MAX: env.RATE_LIMIT_MAX,
     UPSTREAM_AUTH_SCHEME: env.UPSTREAM_AUTH_SCHEME,
     UPSTREAM_TIMEOUT_MS: env.UPSTREAM_TIMEOUT_MS,
@@ -55,6 +68,8 @@ export function loadConfig(env: Env): Config {
     upstreamUrl: vars.UPSTREAM_URL,
     upstreamApiKey: vars.UPSTREAM_API_KEY,
     allowedOrigins: vars.ALLOWED_ORIGINS,
+    allowedModels: vars.ALLOWED_MODELS,
+    maxOutputTokens: vars.MAX_OUTPUT_TOKENS,
     rateLimitMax: vars.RATE_LIMIT_MAX,
     authScheme: vars.UPSTREAM_AUTH_SCHEME,
     timeoutMs: vars.UPSTREAM_TIMEOUT_MS,

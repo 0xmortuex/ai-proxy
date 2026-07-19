@@ -14,6 +14,10 @@ UPSTREAM_URL = "https://api.anthropic.com/v1/messages"
 UPSTREAM_AUTH_SCHEME = "x-api-key"
 # Comma-separated list of exact origins allowed to call this Worker.
 ALLOWED_ORIGINS = "https://0xmortuex.github.io"
+# Comma-separated allowlist of model ids callers may request. Anything else -> 400.
+ALLOWED_MODELS = "claude-sonnet-4-6"
+# Hard ceiling on a request's max_tokens. Over this -> 400 (never silently clamped).
+MAX_OUTPUT_TOKENS = "2048"
 # Requests per hour per client IP.
 RATE_LIMIT_MAX = "5"
 # Upstream timeout in milliseconds (time to response headers for streams).

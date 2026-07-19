@@ -15,6 +15,7 @@ export type StatOutcome =
   | "rateLimited"
   | "kvFailure"
   | "upstreamError"
+  | "rejected"
   | "other";
 
 type CountedOutcome = Exclude<StatOutcome, "other">;
@@ -27,6 +28,9 @@ const dailyStatsSchema = z.object({
   rateLimited: z.number().int().nonnegative(),
   kvFailure: z.number().int().nonnegative(),
   upstreamError: z.number().int().nonnegative(),
+  // Requests rejected by model-allowlist or token-ceiling validation (400).
+  // Defaulted so days written before this counter existed still validate.
+  rejected: z.number().int().nonnegative().default(0),
 });
 
 export type DailyStats = z.infer<typeof dailyStatsSchema>;
@@ -47,6 +51,7 @@ function zeroStats(): DailyStats {
     rateLimited: 0,
     kvFailure: 0,
     upstreamError: 0,
+    rejected: 0,
   };
 }
 

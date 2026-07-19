@@ -4,6 +4,8 @@ export interface Env {
   UPSTREAM_URL: string;
   UPSTREAM_API_KEY: string;
   ALLOWED_ORIGINS: string;
+  ALLOWED_MODELS: string;
+  MAX_OUTPUT_TOKENS?: string;
   RATE_LIMIT_MAX?: string;
   UPSTREAM_AUTH_SCHEME?: string;
   UPSTREAM_TIMEOUT_MS?: string;
@@ -15,6 +17,8 @@ export interface Config {
   upstreamUrl: string;
   upstreamApiKey: string;
   allowedOrigins: readonly string[];
+  allowedModels: readonly string[];
+  maxOutputTokens: number;
   rateLimitMax: number;
   authScheme: "bearer" | "x-api-key";
   timeoutMs: number;

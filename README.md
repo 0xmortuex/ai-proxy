@@ -4,13 +4,14 @@ A Cloudflare Worker that sits between your static frontends (GitHub Pages demos)
 
 ## What it does
 
-- **`POST /v1/chat`** — validates the JSON body with zod, forwards it to the upstream AI API with the secret key injected, and returns the upstream response as `{ "ok": true, "data": ... }`.
+- **`POST /v1/chat`** — validates the JSON body with zod against an explicit schema (`model`, `max_tokens`, `messages`, optional `stream`/`system`; unknown top-level keys are rejected), forwards it to the upstream AI API with the secret key injected, and returns the upstream response as `{ "ok": true, "data": ... }`. `model` and `max_tokens` are both **required** — the upstream default is never allowed to apply.
+- **Request limits** — `model` must be in `ALLOWED_MODELS` and `max_tokens` must be `≤ MAX_OUTPUT_TOKENS`, or the request is rejected with `400` and a generic error (the allowlist is never revealed). `max_tokens` is **never silently clamped** — an over-ceiling request fails loudly rather than returning truncated output the caller didn't ask for.
 - **Streaming** — if the request body sets `"stream": true`, the upstream response body is piped straight through without buffering (SSE works end to end).
 - **Rate limiting** — fixed window of `RATE_LIMIT_MAX` requests per hour per client IP (from `CF-Connecting-IP`), counted in Workers KV. Exceeding it returns `429` with a `Retry-After` header. If KV itself is unreachable the Worker **fails closed** (`503`) rather than forwarding an unmetered request.
 - **Origin allowlist** — requests whose `Origin` header is not in `ALLOWED_ORIGINS` get `403`. CORS preflights echo only the matching allowed origin, never `*`. Note: requests **without** an `Origin` header (curl, server-side scripts) are also rejected — send an `Origin` header when testing.
 - **Size cap** — bodies over 100 KB are rejected with `413` before anything is forwarded.
 - **`GET /health`** — returns `200` with a small status object. Not rate limited, not origin-checked.
-- **Usage tracking** — every `/v1/chat` request bumps a per-UTC-day counter object in KV (`stats:YYYY-MM-DD`): `total`, `success`, `forbidden` (403), `rateLimited` (429), `kvFailure` (503), and `upstreamError` (502). One KV read + one KV write per request. Recording is **best-effort observability, not a control**: if the stats write fails it is logged with `console.error` and swallowed, so it can never turn a working request into a `503`. (This is the deliberate opposite of the rate limiter's fail-**closed** rule.)
+- **Usage tracking** — every `/v1/chat` request bumps a per-UTC-day counter object in KV (`stats:YYYY-MM-DD`): `total`, `success`, `forbidden` (403), `rateLimited` (429), `kvFailure` (503), `upstreamError` (502), and `rejected` (400 from model-allowlist or token-ceiling validation — attempted abuse). One KV read + one KV write per request. Recording is **best-effort observability, not a control**: if the stats write fails it is logged with `console.error` and swallowed, so it can never turn a working request into a `503`. (This is the deliberate opposite of the rate limiter's fail-**closed** rule.)
 - **`GET /stats`** — returns the last 14 days of counters as `{ "ok": true, "data": { "days": [...] } }` (newest day first). Requires an `X-Stats-Token` header matching the `STATS_TOKEN` secret; a missing or wrong token returns `404` (not `401`) so the endpoint stays undiscoverable. Not rate limited and not origin-checked. The token is never logged and never returned.
 
 All error responses are `{ "ok": false, "error": "<generic message>" }`. Details go to `console.error` only (visible via `wrangler tail`). The API key is never logged and never appears in any response.
@@ -32,6 +33,8 @@ This is also all you need to run the tests — `npm test` runs under plain Node 
 | `UPSTREAM_URL` | Full URL of the upstream chat endpoint | Anthropic Messages API |
 | `UPSTREAM_AUTH_SCHEME` | `x-api-key` (Anthropic) or `bearer` (OpenAI-compatible) | `x-api-key` |
 | `ALLOWED_ORIGINS` | Comma-separated exact origins, e.g. `https://you.github.io,https://demo.example.com` | — |
+| `ALLOWED_MODELS` | Comma-separated allowlist of model ids callers may request | — |
+| `MAX_OUTPUT_TOKENS` | Hard ceiling on a request's `max_tokens` (over it → `400`, never clamped) | `2048` |
 | `RATE_LIMIT_MAX` | Requests per hour per IP | `20` |
 | `UPSTREAM_TIMEOUT_MS` | Upstream timeout in ms (time-to-headers for streams) | `60000` |
 
@@ -166,14 +169,15 @@ curl -H "X-Stats-Token: $STATS_TOKEN" \
         "forbidden": 1,
         "rateLimited": 2,
         "kvFailure": 0,
-        "upstreamError": 1
+        "upstreamError": 1,
+        "rejected": 0
       }
     ]
   }
 }
 ```
 
-`total` counts every `/v1/chat` request; the named buckets count rejections by reason (`forbidden` = 403 origin check, `rateLimited` = 429, `kvFailure` = 503, `upstreamError` = 502). A missing or wrong token returns `404`, identical to any unknown path.
+`total` counts every `/v1/chat` request; the named buckets count rejections by reason (`forbidden` = 403 origin check, `rateLimited` = 429, `kvFailure` = 503, `upstreamError` = 502, `rejected` = 400 model-allowlist / token-ceiling validation). A missing or wrong token returns `404`, identical to any unknown path.
 
 ## Notes
 

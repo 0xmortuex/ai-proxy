@@ -65,12 +65,14 @@ export default {
       if (request.method !== "POST") {
         return jsonError(405, "Method not allowed", { Allow: "POST, OPTIONS" });
       }
-      const response = await handleChat(request, config);
+      const { response, outcome } = await handleChat(request, config);
       // Best-effort: recordOutcome never throws, so a stats KV failure logs
       // and is swallowed rather than altering the response we already have.
+      // handleChat supplies an explicit outcome only where the status alone is
+      // ambiguous (a 400 from validation rejection vs. a malformed body).
       await recordOutcome(
         config.rateLimitKv,
-        outcomeForStatus(response.status),
+        outcome ?? outcomeForStatus(response.status),
         Date.now()
       );
       return response;
@@ -110,10 +112,25 @@ async function handleStats(
   }
 }
 
-async function handleChat(request: Request, config: Config): Promise<Response> {
+/**
+ * Result of handling a /v1/chat request. `outcome` is set only when the HTTP
+ * status alone can't identify the stats bucket — specifically a 400 from
+ * model-allowlist / token-ceiling rejection, which must be counted separately
+ * from a malformed-body 400. When omitted, the caller derives the bucket from
+ * the response status.
+ */
+interface ChatResult {
+  response: Response;
+  outcome?: StatOutcome;
+}
+
+async function handleChat(
+  request: Request,
+  config: Config
+): Promise<ChatResult> {
   const origin = resolveAllowedOrigin(request, config.allowedOrigins);
   if (origin === null) {
-    return jsonError(403, "Origin not allowed");
+    return { response: jsonError(403, "Origin not allowed") };
   }
   const cors = corsHeaders(origin);
 
@@ -132,16 +149,16 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
     // read or record usage, we must not forward the request upstream.
     console.error("Rate limit check failed:", error);
     cors.set("Retry-After", String(KV_OUTAGE_RETRY_AFTER_SECONDS));
-    return jsonError(503, "Service temporarily unavailable", cors);
+    return { response: jsonError(503, "Service temporarily unavailable", cors) };
   }
   if (!result.allowed) {
     cors.set("Retry-After", String(result.retryAfterSeconds));
-    return jsonError(429, "Rate limit exceeded", cors);
+    return { response: jsonError(429, "Rate limit exceeded", cors) };
   }
 
   const bodyResult = await readBodyWithLimit(request, MAX_BODY_BYTES);
   if (bodyResult.kind === "too-large") {
-    return jsonError(413, "Request body too large", cors);
+    return { response: jsonError(413, "Request body too large", cors) };
   }
 
   let parsedBody: unknown;
@@ -149,15 +166,30 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
     parsedBody = JSON.parse(new TextDecoder().decode(bodyResult.bytes));
   } catch (error) {
     console.error("Request body is not valid JSON:", error);
-    return jsonError(400, "Invalid JSON body", cors);
+    return { response: jsonError(400, "Invalid JSON body", cors) };
   }
 
   const validation = chatRequestSchema.safeParse(parsedBody);
   if (!validation.success) {
     console.error("Request body failed validation:", validation.error.issues);
-    return jsonError(400, "Invalid request body", cors);
+    return { response: jsonError(400, "Invalid request body", cors) };
   }
-  const wantsStream = validation.data.stream === true;
+  const body = validation.data;
+
+  // Constrain what callers may spend on: reject any model outside the allowlist
+  // or a max_tokens above the ceiling. The 400 message is generic so it never
+  // reveals the allowlist. These are the "attempted abuse" signal for /stats.
+  if (
+    !config.allowedModels.includes(body.model) ||
+    body.max_tokens > config.maxOutputTokens
+  ) {
+    return {
+      response: jsonError(400, "Invalid request body", cors),
+      outcome: "rejected",
+    };
+  }
+
+  const wantsStream = body.stream === true;
 
   const upstreamHeaders = new Headers({ "Content-Type": "application/json" });
   if (config.authScheme === "x-api-key") {
@@ -182,10 +214,10 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
     clearTimeout(timer);
     if (controller.signal.aborted) {
       console.error(`Upstream timed out after ${config.timeoutMs}ms`);
-      return jsonError(504, "Upstream timeout", cors);
+      return { response: jsonError(504, "Upstream timeout", cors) };
     }
     console.error("Upstream request failed:", error);
-    return jsonError(502, "Upstream request failed", cors);
+    return { response: jsonError(502, "Upstream request failed", cors) };
   }
 
   if (!upstream.ok) {
@@ -198,7 +230,7 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
       clearTimeout(timer);
     }
     console.error(`Upstream returned ${upstream.status}: ${detail}`);
-    return jsonError(502, "Upstream error", cors);
+    return { response: jsonError(502, "Upstream error", cors) };
   }
 
   if (wantsStream) {
@@ -211,7 +243,7 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
       upstream.headers.get("Content-Type") ?? "text/event-stream"
     );
     headers.set("Cache-Control", "no-store");
-    return new Response(upstream.body, { status: 200, headers });
+    return { response: new Response(upstream.body, { status: 200, headers }) };
   }
 
   let upstreamData: unknown;
@@ -219,10 +251,10 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
     upstreamData = await upstream.json();
   } catch (error) {
     console.error("Upstream returned non-JSON response:", error);
-    return jsonError(502, "Upstream error", cors);
+    return { response: jsonError(502, "Upstream error", cors) };
   } finally {
     clearTimeout(timer);
   }
 
-  return jsonOk(upstreamData, cors);
+  return { response: jsonOk(upstreamData, cors) };
 }
