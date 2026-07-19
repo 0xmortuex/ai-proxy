@@ -31,6 +31,7 @@ const env = {
   RATE_LIMIT_MAX: "20",
   UPSTREAM_AUTH_SCHEME: "x-api-key",
   UPSTREAM_TIMEOUT_MS: "60000",
+  STATS_TOKEN: "test-stats-token",
 };
 
 // Mocked upstream. fetchCalls counts how many times the handler hit the network.
