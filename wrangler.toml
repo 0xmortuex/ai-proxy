@@ -15,7 +15,7 @@ UPSTREAM_AUTH_SCHEME = "x-api-key"
 # Comma-separated list of exact origins allowed to call this Worker.
 ALLOWED_ORIGINS = "https://0xmortuex.github.io"
 # Requests per hour per client IP.
-RATE_LIMIT_MAX = "20"
+RATE_LIMIT_MAX = "5"
 # Upstream timeout in milliseconds (time to response headers for streams).
 UPSTREAM_TIMEOUT_MS = "60000"
 
