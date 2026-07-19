@@ -10,6 +10,8 @@ A Cloudflare Worker that sits between your static frontends (GitHub Pages demos)
 - **Origin allowlist** — requests whose `Origin` header is not in `ALLOWED_ORIGINS` get `403`. CORS preflights echo only the matching allowed origin, never `*`. Note: requests **without** an `Origin` header (curl, server-side scripts) are also rejected — send an `Origin` header when testing.
 - **Size cap** — bodies over 100 KB are rejected with `413` before anything is forwarded.
 - **`GET /health`** — returns `200` with a small status object. Not rate limited, not origin-checked.
+- **Usage tracking** — every `/v1/chat` request bumps a per-UTC-day counter object in KV (`stats:YYYY-MM-DD`): `total`, `success`, `forbidden` (403), `rateLimited` (429), `kvFailure` (503), and `upstreamError` (502). One KV read + one KV write per request. Recording is **best-effort observability, not a control**: if the stats write fails it is logged with `console.error` and swallowed, so it can never turn a working request into a `503`. (This is the deliberate opposite of the rate limiter's fail-**closed** rule.)
+- **`GET /stats`** — returns the last 14 days of counters as `{ "ok": true, "data": { "days": [...] } }` (newest day first). Requires an `X-Stats-Token` header matching the `STATS_TOKEN` secret; a missing or wrong token returns `404` (not `401`) so the endpoint stays undiscoverable. Not rate limited and not origin-checked. The token is never logged and never returned.
 
 All error responses are `{ "ok": false, "error": "<generic message>" }`. Details go to `console.error` only (visible via `wrangler tail`). The API key is never logged and never appears in any response.
 
@@ -78,6 +80,16 @@ wrangler secret put UPSTREAM_API_KEY
 
 **Ordering:** the dashboard path needs the Worker to exist first. If you have no capable machine, let CI deploy once (the Worker will return `500 "Service misconfigured"` until the key is present), then add the secret in the dashboard — the next request works. No redeploy is needed for a secret change.
 
+### 4b. Set the stats token secret
+
+`GET /stats` is guarded by a second Worker **secret**, `STATS_TOKEN`. The Worker returns `500 "Service misconfigured"` until it is set (it is required config). Pick a long random value and set it the same way:
+
+```sh
+wrangler secret put STATS_TOKEN
+```
+
+…or add `STATS_TOKEN` as an encrypted secret in the dashboard. Keep it secret — anyone holding it can read your usage counters. It is never logged and never appears in a response.
+
 ### 5. Push to deploy
 
 Push to `main`, or run the workflow manually from the **Actions** tab. Wrangler prints the Worker URL in the job log, e.g. `https://ai-proxy.<your-subdomain>.workers.dev`.
@@ -132,6 +144,36 @@ async function chatStream(userText, onChunk) {
 ```
 
 The request body is forwarded to the upstream as-is (with the key injected), so use whatever fields your upstream API expects — the proxy only requires a non-empty `messages` array and treats `stream: true` as the signal to pipe.
+
+## Reading usage stats
+
+`GET /stats` with the `X-Stats-Token` header returns the last 14 days of counters (newest day first). Unlike `/v1/chat`, it needs no `Origin` header and is not rate limited:
+
+```sh
+curl -H "X-Stats-Token: $STATS_TOKEN" \
+  https://ai-proxy.YOUR-SUBDOMAIN.workers.dev/stats
+```
+
+```json
+{
+  "ok": true,
+  "data": {
+    "days": [
+      {
+        "date": "2026-07-19",
+        "total": 42,
+        "success": 38,
+        "forbidden": 1,
+        "rateLimited": 2,
+        "kvFailure": 0,
+        "upstreamError": 1
+      }
+    ]
+  }
+}
+```
+
+`total` counts every `/v1/chat` request; the named buckets count rejections by reason (`forbidden` = 403 origin check, `rateLimited` = 429, `kvFailure` = 503, `upstreamError` = 502). A missing or wrong token returns `404`, identical to any unknown path.
 
 ## Notes
 
