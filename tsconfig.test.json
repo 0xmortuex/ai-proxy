@@ -1,0 +1,14 @@
+{
+  // Compiles src/ to CommonJS in dist-test/ so Node's built-in test runner
+  // (node --test) can require the REAL handler. See test/README or package.json.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist-test",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src"]
+}

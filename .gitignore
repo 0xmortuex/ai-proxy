@@ -1,4 +1,6 @@
 node_modules/
 .wrangler/
 dist/
+dist-test/
 .dev.vars
+.claude/
