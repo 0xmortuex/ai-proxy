@@ -2,11 +2,13 @@ import { chatRequestSchema } from "./lib/chat-schema";
 import { corsHeaders, handlePreflight, resolveAllowedOrigin } from "./lib/cors";
 import { loadConfig } from "./lib/env";
 import { jsonError, jsonOk, readBodyWithLimit } from "./lib/http";
-import { checkRateLimit } from "./lib/rate-limit";
+import { checkRateLimit, type RateLimitResult } from "./lib/rate-limit";
 import type { Config, Env } from "./types/api";
 
 const MAX_BODY_BYTES = 100 * 1024;
 const ANTHROPIC_VERSION = "2023-06-01";
+// How long to ask clients to wait when KV is unreachable and we fail closed.
+const KV_OUTAGE_RETRY_AFTER_SECONDS = 30;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -49,23 +51,24 @@ async function handleChat(request: Request, config: Config): Promise<Response> {
   const cors = corsHeaders(origin);
 
   const clientIp = request.headers.get("CF-Connecting-IP") ?? "unknown";
-  let rateLimited = false;
-  let retryAfterSeconds = 0;
+  let result: RateLimitResult;
   try {
-    const result = await checkRateLimit(
+    result = await checkRateLimit(
       config.rateLimitKv,
       clientIp,
       config.rateLimitMax,
       Date.now()
     );
-    rateLimited = !result.allowed;
-    retryAfterSeconds = result.retryAfterSeconds;
   } catch (error) {
-    // Fail open: a KV outage should not take the proxy down with it.
+    // Fail closed: KV is the only spend control on a paid key (the Origin
+    // allowlist is browser-enforced and trivially spoofed). If we cannot
+    // read or record usage, we must not forward the request upstream.
     console.error("Rate limit check failed:", error);
+    cors.set("Retry-After", String(KV_OUTAGE_RETRY_AFTER_SECONDS));
+    return jsonError(503, "Service temporarily unavailable", cors);
   }
-  if (rateLimited) {
-    cors.set("Retry-After", String(retryAfterSeconds));
+  if (!result.allowed) {
+    cors.set("Retry-After", String(result.retryAfterSeconds));
     return jsonError(429, "Rate limit exceeded", cors);
   }
 
