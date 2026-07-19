@@ -17,6 +17,7 @@ const varsSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   UPSTREAM_AUTH_SCHEME: z.enum(["bearer", "x-api-key"]).default("bearer"),
   UPSTREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  STATS_TOKEN: z.string().min(1),
 });
 
 let cached: Config | null = null;
@@ -37,6 +38,7 @@ export function loadConfig(env: Env): Config {
     RATE_LIMIT_MAX: env.RATE_LIMIT_MAX,
     UPSTREAM_AUTH_SCHEME: env.UPSTREAM_AUTH_SCHEME,
     UPSTREAM_TIMEOUT_MS: env.UPSTREAM_TIMEOUT_MS,
+    STATS_TOKEN: env.STATS_TOKEN,
   });
 
   const kv: unknown = env.RATE_LIMIT;
@@ -57,6 +59,7 @@ export function loadConfig(env: Env): Config {
     authScheme: vars.UPSTREAM_AUTH_SCHEME,
     timeoutMs: vars.UPSTREAM_TIMEOUT_MS,
     rateLimitKv: env.RATE_LIMIT,
+    statsToken: vars.STATS_TOKEN,
   };
   return cached;
 }

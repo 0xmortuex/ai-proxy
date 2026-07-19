@@ -3,12 +3,37 @@ import { corsHeaders, handlePreflight, resolveAllowedOrigin } from "./lib/cors";
 import { loadConfig } from "./lib/env";
 import { jsonError, jsonOk, readBodyWithLimit } from "./lib/http";
 import { checkRateLimit, type RateLimitResult } from "./lib/rate-limit";
+import {
+  readRecentStats,
+  recordOutcome,
+  type StatOutcome,
+} from "./lib/stats";
 import type { Config, Env } from "./types/api";
 
 const MAX_BODY_BYTES = 100 * 1024;
 const ANTHROPIC_VERSION = "2023-06-01";
 // How long to ask clients to wait when KV is unreachable and we fail closed.
 const KV_OUTAGE_RETRY_AFTER_SECONDS = 30;
+// How many days of daily counters GET /stats returns.
+const STATS_WINDOW_DAYS = 14;
+
+/** Map the response status of a chat request to a stats bucket. */
+function outcomeForStatus(status: number): StatOutcome {
+  switch (status) {
+    case 200:
+      return "success";
+    case 403:
+      return "forbidden";
+    case 429:
+      return "rateLimited";
+    case 502:
+      return "upstreamError";
+    case 503:
+      return "kvFailure";
+    default:
+      return "other";
+  }
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -29,6 +54,10 @@ export default {
       return jsonOk({ status: "ok" });
     }
 
+    if (url.pathname === "/stats") {
+      return handleStats(request, config);
+    }
+
     if (url.pathname === "/v1/chat") {
       if (request.method === "OPTIONS") {
         return handlePreflight(request, config.allowedOrigins);
@@ -36,12 +65,50 @@ export default {
       if (request.method !== "POST") {
         return jsonError(405, "Method not allowed", { Allow: "POST, OPTIONS" });
       }
-      return handleChat(request, config);
+      const response = await handleChat(request, config);
+      // Best-effort: recordOutcome never throws, so a stats KV failure logs
+      // and is swallowed rather than altering the response we already have.
+      await recordOutcome(
+        config.rateLimitKv,
+        outcomeForStatus(response.status),
+        Date.now()
+      );
+      return response;
     }
 
     return jsonError(404, "Not found");
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * GET /stats — protected by an X-Stats-Token header matching STATS_TOKEN. A
+ * missing or wrong token returns 404 (not 401) so the endpoint's existence
+ * stays undiscoverable. Not rate limited and not origin-checked. The token is
+ * never logged and never returned.
+ */
+async function handleStats(
+  request: Request,
+  config: Config
+): Promise<Response> {
+  const token = request.headers.get("X-Stats-Token");
+  if (token === null || token !== config.statsToken) {
+    return jsonError(404, "Not found");
+  }
+  if (request.method !== "GET") {
+    return jsonError(405, "Method not allowed", { Allow: "GET" });
+  }
+  try {
+    const report = await readRecentStats(
+      config.rateLimitKv,
+      Date.now(),
+      STATS_WINDOW_DAYS
+    );
+    return jsonOk(report);
+  } catch (error) {
+    console.error("Failed to read usage stats:", error);
+    return jsonError(503, "Service temporarily unavailable");
+  }
+}
 
 async function handleChat(request: Request, config: Config): Promise<Response> {
   const origin = resolveAllowedOrigin(request, config.allowedOrigins);

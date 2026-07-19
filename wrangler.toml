@@ -19,5 +19,6 @@ RATE_LIMIT_MAX = "20"
 # Upstream timeout in milliseconds (time to response headers for streams).
 UPSTREAM_TIMEOUT_MS = "60000"
 
-# The API key is a secret, never a var:
-#   wrangler secret put UPSTREAM_API_KEY
+# Secrets, never vars:
+#   wrangler secret put UPSTREAM_API_KEY   # upstream API key
+#   wrangler secret put STATS_TOKEN        # token guarding GET /stats

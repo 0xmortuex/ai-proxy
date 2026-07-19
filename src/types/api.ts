@@ -7,6 +7,7 @@ export interface Env {
   RATE_LIMIT_MAX?: string;
   UPSTREAM_AUTH_SCHEME?: string;
   UPSTREAM_TIMEOUT_MS?: string;
+  STATS_TOKEN: string;
 }
 
 /** Validated, parsed configuration derived from Env. */
@@ -18,6 +19,7 @@ export interface Config {
   authScheme: "bearer" | "x-api-key";
   timeoutMs: number;
   rateLimitKv: KVNamespace;
+  statsToken: string;
 }
 
 export interface ApiSuccess<T> {
