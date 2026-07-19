@@ -1,6 +1,6 @@
 name = "ai-proxy"
 main = "src/index.ts"
-compatibility_date = "2026-07-01"
+compatibility_date = "2026-01-01"
 
 kv_namespaces = [
   { binding = "RATE_LIMIT", id = "ba0224c06da94fc1b0ce4944a837db0d" }
