@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Proxy Demo</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --border: #2a2f3a;
+        --text: #e6e9ef;
+        --muted: #9aa3b2;
+        --accent: #4f8cff;
+        --ok: #2ecc71;
+        --err: #ff5c5c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      main {
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      p.sub {
+        margin: 0 0 16px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 110px;
+        resize: vertical;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+      }
+      .buttons {
+        display: flex;
+        gap: 10px;
+        margin: 12px 0;
+        flex-wrap: wrap;
+      }
+      button {
+        flex: 1 1 140px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: var(--panel);
+        color: var(--text);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .status {
+        font-weight: 600;
+      }
+      .status[data-state="loading"] {
+        color: var(--accent);
+      }
+      .status[data-state="success"] {
+        color: var(--ok);
+      }
+      .status[data-state="error"] {
+        color: var(--err);
+      }
+      .output {
+        white-space: pre-wrap;
+        word-break: break-word;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        min-height: 80px;
+      }
+      .error-box {
+        border-color: var(--err);
+      }
+      .error-box .code {
+        color: var(--err);
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      code {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AI Proxy Demo</h1>
+      <p class="sub">
+        Test page for the Worker at
+        <code>ai-proxy.mortuexhavoc.workers.dev</code>. The API key lives on the
+        Worker &mdash; never in this page.
+      </p>
+
+      <textarea
+        id="prompt"
+        placeholder="Ask something&hellip;"
+        aria-label="Prompt"
+      >Say hello in one short sentence.</textarea>
+
+      <div class="buttons">
+        <button id="send">Send</button>
+        <button id="stream" class="secondary">Send (stream)</button>
+      </div>
+
+      <div class="meta">
+        <span
+          >Requests this session:
+          <strong id="counter">0</strong> / 20</span
+        >
+        <span class="status" id="status" data-state="idle">idle</span>
+      </div>
+
+      <div class="output" id="output" aria-live="polite"></div>
+    </main>
+
+    <script>
+      "use strict";
+
+      var WORKER = "https://ai-proxy.mortuexhavoc.workers.dev";
+      var MODEL = "claude-haiku-4-5-20251001";
+      var MAX_TOKENS = 1024;
+
+      var els = {
+        prompt: document.getElementById("prompt"),
+        send: document.getElementById("send"),
+        stream: document.getElementById("stream"),
+        counter: document.getElementById("counter"),
+        status: document.getElementById("status"),
+        output: document.getElementById("output"),
+      };
+
+      var requestCount = 0;
+
+      function setStatus(state, label) {
+        els.status.dataset.state = state;
+        els.status.textContent = label;
+      }
+
+      function setBusy(busy) {
+        els.send.disabled = busy;
+        els.stream.disabled = busy;
+      }
+
+      function bumpCounter() {
+        requestCount += 1;
+        els.counter.textContent = String(requestCount);
+      }
+
+      function showText(text) {
+        els.output.className = "output";
+        els.output.textContent = text;
+      }
+
+      // Render the real HTTP status and the raw body verbatim, so a 403 or 429
+      // is visible exactly as the Worker sent it rather than masked.
+      function showError(status, rawBody) {
+        setStatus("error", "error");
+        els.output.className = "output error-box";
+        els.output.textContent = "";
+        var code = document.createElement("div");
+        code.className = "code";
+        code.textContent = "HTTP " + status;
+        var body = document.createElement("div");
+        body.textContent = rawBody;
+        els.output.appendChild(code);
+        els.output.appendChild(body);
+      }
+
+      function buildBody(stream) {
+        var text = els.prompt.value.trim();
+        return {
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          stream: stream,
+          messages: [{ role: "user", content: text }],
+        };
+      }
+
+      // Non-streaming: unwrap { ok, data } and join the text blocks.
+      async function sendNonStreaming() {
+        setBusy(true);
+        setStatus("loading", "loading");
+        showText("");
+        bumpCounter();
+        try {
+          var res = await fetch(WORKER + "/v1/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildBody(false)),
+          });
+          var raw = await res.text();
+          if (!res.ok) {
+            showError(res.status, raw);
+            return;
+          }
+          var payload = JSON.parse(raw);
+          var blocks = (payload.data && payload.data.content) || [];
+          var text = blocks
+            .filter(function (b) {
+              return b.type === "text";
+            })
+            .map(function (b) {
+              return b.text;
+            })
+            .join("");
+          setStatus("success", "success");
+          showText(text || "(no text content)");
+        } catch (err) {
+          showError("network", String(err));
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      // Streaming: read the SSE body and append each content_block_delta as it
+      // arrives. A mid-stream `error` event is surfaced verbatim.
+      async function sendStreaming() {
+        setBusy(true);
+        setStatus("loading", "loading");
+        showText("");
+        bumpCounter();
+        try {
+          var res = await fetch(WORKER + "/v1/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildBody(true)),
+          });
+
+          // Non-2xx never streams; the Worker returns a JSON error envelope.
+          if (!res.ok) {
+            var errBody = await res.text();
+            showError(res.status, errBody);
+            return;
+          }
+
+          var reader = res.body.getReader();
+          var decoder = new TextDecoder();
+          var buffer = "";
+          var acc = "";
+          var streamFailed = false;
+
+          while (true) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+
+            var events = buffer.split("\n\n");
+            buffer = events.pop();
+
+            for (var i = 0; i < events.length; i++) {
+              var dataLine = events[i]
+                .split("\n")
+                .find(function (line) {
+                  return line.indexOf("data:") === 0;
+                });
+              if (!dataLine) continue;
+              var json = dataLine.slice(5).trim();
+              if (!json) continue;
+
+              var evt;
+              try {
+                evt = JSON.parse(json);
+              } catch (parseErr) {
+                continue;
+              }
+
+              if (evt.type === "error") {
+                streamFailed = true;
+                var msg =
+                  (evt.error && (evt.error.message || evt.error.type)) ||
+                  json;
+                showError("stream error", msg);
+                break;
+              }
+              if (
+                evt.type === "content_block_delta" &&
+                evt.delta &&
+                typeof evt.delta.text === "string"
+              ) {
+                acc += evt.delta.text;
+                setStatus("loading", "streaming");
+                showText(acc);
+              }
+            }
+            if (streamFailed) break;
+          }
+
+          if (!streamFailed) {
+            setStatus("success", "success");
+            showText(acc || "(no text content)");
+          }
+        } catch (err) {
+          showError("network", String(err));
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      // Fire only on explicit click; never on input change or page load.
+      els.send.addEventListener("click", sendNonStreaming);
+      els.stream.addEventListener("click", sendStreaming);
+    </script>
+  </body>
+</html>
