@@ -192,3 +192,4 @@ curl -H "X-Stats-Token: $STATS_TOKEN" \
 - Rate limit counters live in KV, which is eventually consistent — the limit is approximate under rapid bursts from one IP. Good enough for abuse throttling.
 - If the KV lookup or write errors, the proxy **fails closed** (`503` + `Retry-After`, logs the error) so a KV outage never silently removes the only spend control on the key.
 - `Origin` headers can be forged by non-browser clients; the allowlist stops other websites from using your proxy from browsers, while the rate limit bounds abuse from scripts.
+- `demo/` is the single-file browser test client for this Worker, imported with its history from [0xmortuex/ai-proxy-demo](https://github.com/0xmortuex/ai-proxy-demo). It is not part of the Worker bundle and is not deployed by `wrangler deploy`.
